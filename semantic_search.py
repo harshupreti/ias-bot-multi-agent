@@ -1,0 +1,85 @@
+# tools/semantic_tool.py
+
+from langchain_core.tools import tool
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+from qdrant_client import QdrantClient
+from embedding import get_embedding_model
+import os
+import time
+from collections import deque
+from dotenv import load_dotenv
+from typing import Union, List
+
+# --- Load Environment ---
+load_dotenv(dotenv_path="QDRANT.env")
+QDRANT_CLOUD_URL = os.getenv("QDRANT_CLOUD_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+COLLECTION_NAME = "ias_officers"
+
+# --- Setup Qdrant Client ---
+client = QdrantClient(url=QDRANT_CLOUD_URL, api_key=QDRANT_API_KEY)
+EMBEDDING_FUNC = get_embedding_model()
+
+# --- Rate Limiter ---
+LLM_RATE_LIMIT = 10
+MIN_INTERVAL = 60.0 / LLM_RATE_LIMIT
+llm_timestamps = deque()
+
+def rate_limited_call(fn, *args, **kwargs):
+    now = time.time()
+    while llm_timestamps and now - llm_timestamps[0] > 60:
+        llm_timestamps.popleft()
+    if len(llm_timestamps) >= LLM_RATE_LIMIT:
+        return None
+    result = fn(*args, **kwargs)
+    llm_timestamps.append(time.time())
+    return result
+
+@tool
+def semantic_search(query: Union[str, List[str]], top_k: int = None) -> list:
+    """
+    Find IAS officers matching a semantic similarity query on gold data.
+
+    - If given a single query string, runs with top_k=5 by default.
+    - If given a list of queries, each query runs with top_k=1 and results are merged.
+    - Results are deduplicated using (officer_name, cadre, allotment_year).
+    """
+    if isinstance(query, str):
+        queries = [query]
+        k = top_k or 5
+    elif isinstance(query, list):
+        queries = query
+        k = top_k or 1
+    else:
+        raise ValueError("Invalid query type. Must be string or list of strings.")
+
+    seen = set()
+    combined_results = []
+
+    for q in queries:
+        query_vector = EMBEDDING_FUNC.embed_query(q)
+
+        hits = client.search(
+            collection_name=COLLECTION_NAME,
+            query_vector=query_vector,
+            limit=min(k, 5),
+            with_payload=True,
+            with_vectors=False,
+            query_filter=Filter(must=[
+                FieldCondition(key="source", match=MatchValue(value="gold"))
+            ])
+        )
+
+        for hit in hits:
+            officer = hit.payload
+            officer["_vector_score"] = hit.score
+            identity = (
+                officer.get("officer_name", ""),
+                officer.get("cadre", ""),
+                officer.get("allotment_year", "")
+            )
+            if identity not in seen:
+                seen.add(identity)
+                combined_results.append(officer)
+
+    return combined_results

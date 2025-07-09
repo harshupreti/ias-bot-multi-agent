@@ -1,0 +1,163 @@
+# tools/filter_tool.py
+
+import os
+import re
+import json
+from dotenv import load_dotenv
+from itertools import combinations
+from pydantic import BaseModel, Field
+from openai import OpenAI
+from langchain_core.tools import tool
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue, Range
+
+# --- Load environment ---
+load_dotenv(dotenv_path="QDRANT.env")
+QDRANT_CLOUD_URL = os.getenv("QDRANT_CLOUD_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+
+load_dotenv(dotenv_path="GITHUB_TOKEN.env")
+OPENAI_TOKEN = os.getenv("GITHUB_TOKEN")
+
+# --- Clients ---
+client = QdrantClient(url=QDRANT_CLOUD_URL, api_key=QDRANT_API_KEY)
+openai_client = OpenAI(api_key=OPENAI_TOKEN)
+
+COLLECTION_NAME = "ias_officers"
+MAX_RESULTS = 5
+MAX_SCROLL_POINTS = 3054
+GPT_MODEL = "gpt-4o-mini"
+
+# --- Utilities ---
+def safe_json_parse(text, fallback="{}"):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}|\[.*\]", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except:
+                pass
+    return json.loads(fallback)
+
+def extract_traits_from_query(query: str) -> dict:
+    system_prompt = """
+You are a trait extractor for filtering IAS officer metadata.
+
+Return a JSON object. Each key MUST be from this allowed list:
+["officer_name", "cadre", "allotment_year", "recruitment_mode", "education", "postings", "training_details", "awards_publications"]
+
+✅ For each key, return a value-object like:
+{ "value": ..., "op": "=", ">=", "<=", or "contains" }
+
+Rules:
+- For allotment_year, support ">=", "<=", or "=" only.
+- For education, postings, training_details: use "contains".
+- For cadre, recruitment_mode, officer_name: use "=".
+- Use list for postings/training_details if needed.
+- Return {} if no traits found.
+- Output only raw JSON, no text or comments.
+"""
+    response = openai_client.chat.completions.create(
+        model=GPT_MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": query}
+        ],
+        temperature=0.0
+    )
+
+    raw = response.choices[0].message.content.strip()
+    print("[DEBUG] Raw trait extraction LLM response:", raw)
+    return safe_json_parse(raw, fallback="{}")
+
+def build_condition(key, cond):
+    val = cond["value"]
+    op = cond.get("op", "=")
+
+    if key == "allotment_year":
+        val = float(val)
+        if op == ">=":
+            return FieldCondition(key=key, range=Range(gte=val))
+        elif op == "<=":
+            return FieldCondition(key=key, range=Range(lte=val))
+        elif op == "=":
+            return FieldCondition(key=key, match=MatchValue(value=val))
+    return FieldCondition(key=key, match=MatchValue(value=val))
+
+
+class QueryInput(BaseModel):
+    query: str = Field(..., description="User's original query to filter officers.")
+
+
+@tool
+def filter_officers(input: QueryInput) -> list:
+    """
+    Filter IAS officers from Qdrant using traits inferred from a user query.
+    This tool automatically runs trait extraction internally.
+
+    Input:
+    - query: plain text (e.g. "Show IAS officers from Gujarat after 2010")
+
+    Output:
+    - List of matching officer payloads
+    """
+    traits = extract_traits_from_query(input.query)
+
+    if not traits:
+        return []
+
+    trait_items = list(traits.items())
+
+    for r in range(len(trait_items), 0, -1):
+        for combo in combinations(trait_items, r):
+            conditions = []
+
+            # Add user-specified filters
+            for k, v in combo:
+                try:
+                    cond = build_condition(k, v) if isinstance(v, dict) else FieldCondition(key=k, match=MatchValue(value=v))
+                    if cond:
+                        conditions.append(cond)
+                except:
+                    continue
+
+            # Always enforce source = gold
+            conditions.append(FieldCondition(key="source", match=MatchValue(value="gold")))
+
+            query_filter = Filter(must=conditions)
+            print("[DEBUG] Query filter:", query_filter)
+
+            all_results = []
+            next_page = None
+            total_fetched = 0
+
+            try:
+                while total_fetched < MAX_SCROLL_POINTS:
+                    results, next_page = client.scroll(
+                        collection_name=COLLECTION_NAME,
+                        scroll_filter=query_filter,
+                        limit=MAX_RESULTS,
+                        with_payload=True,
+                        with_vectors=False,
+                        offset=next_page
+                    )
+
+                    for hit in results:
+                        if hasattr(hit, "payload"):
+                            all_results.append(hit.payload)
+
+                    total_fetched += len(results)
+
+                    if not next_page or not results:
+                        break
+
+                import random
+                random.shuffle(all_results)
+                return all_results[:3]
+
+            except Exception as e:
+                return [{"error": str(e)}]
+
+    return []

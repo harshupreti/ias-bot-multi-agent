@@ -1,0 +1,48 @@
+from tools import ALL_TOOLS
+from langchain.agents import initialize_agent, AgentType
+from langchain_openai import ChatOpenAI
+import os
+from dotenv import load_dotenv
+load_dotenv(dotenv_path="GITHUB_TOKEN.env")
+OPENAI_API_KEY = os.getenv("GITHUB_TOKEN")
+
+llm = ChatOpenAI(
+    model="gpt-4o-mini",
+    # base_url="https://models.github.ai/inference",
+    api_key=OPENAI_API_KEY,
+    temperature=0.2
+)
+
+system_message = """
+You are an assistant that recommends IAS officers for specific roles based on user queries.
+
+Rules:
+- If the user asks for officers for a role (e.g. IT Director), exclude those already in that role or higher.
+- Role seniority: Secretary > Additional Secretary > Joint Secretary > Director > Deputy Secretary > Under Secretary > Section Officer
+- Prefer officers just below the target level, or ready for promotion.
+- Only search the web or raw data if required. Avoid overusing web quota.
+
+Always reason step by step and use tools as needed.
+"""
+
+# Now pass ALL_TOOLS directly to the agent
+agent = initialize_agent(
+    tools=ALL_TOOLS,
+    llm=llm,
+    agent=AgentType.OPENAI_FUNCTIONS,
+    verbose=True,
+    agent_kwargs={"system_message": system_message}
+)
+
+# Terminal test loop
+if __name__ == "__main__":
+    print("🔍 Ask about IAS officers (type 'exit' to quit):\n")
+    while True:
+        query = input("🧠 User: ")
+        if query.lower() in {"exit", "quit"}:
+            break
+        try:
+            response = agent.invoke(query)
+            print("\n📢 Answer:\n", response["output"], "\n")
+        except Exception as e:
+            print("⚠️ Error:", str(e))
