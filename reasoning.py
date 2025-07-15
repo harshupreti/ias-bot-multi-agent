@@ -5,27 +5,30 @@ from openai import OpenAI
 import os
 import json
 from dotenv import load_dotenv
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, field_validator
+from typing import List, Optional, Union
 
 load_dotenv("GITHUB_TOKEN.env")
 
-client = OpenAI(
-    api_key=os.getenv("GITHUB_TOKEN")
-)
+client = OpenAI(api_key=os.getenv("GITHUB_TOKEN"))
 
 # Officer schema
 class Officer(BaseModel):
     officer_name: str
-    cadre: Optional[str]
-    allotment_year: Optional[str]
-    education: Optional[str]
-    postings: Optional[str]
-    training_details: Optional[str]
-    awards_publications: Optional[str]
-    source_file: Optional[str]
-    source: Optional[str]
-    blob_path: Optional[str]
+    cadre: Optional[str] = None
+    allotment_year: Optional[Union[str, int]] = None
+    education: Optional[str] = None
+    postings: Optional[str] = None
+    training_details: Optional[str] = None
+    awards_publications: Optional[str] = None
+    source_file: Optional[str] = None
+    source: Optional[str] = None
+    blob_path: Optional[str] = None
+
+    @field_validator("allotment_year")
+    def convert_allotment_year_to_str(cls, v):
+        return str(v) if v is not None else v
+
 
 @tool
 def reasoning_tool(query: str, officers: List[Officer]) -> str:
@@ -45,8 +48,9 @@ You are a critical reasoning agent that evaluates IAS officer profiles for a giv
 Your job is to:
 1. Carefully analyze the list of OFFICERS (in JSON format).
 2. For each officer, decide whether they are a good match for the user's query (based on experience, role, domain, seniority, etc.).
-3. ONLY keep the officers who are relevant.
-4. Return your result in this exact format:
+3. Strictly return officers that are just below the target role or ready for promotion.
+4. ONLY keep the officers who are relevant.
+5. Return your result in this exact format:
 
 - If at least one relevant match is found:
     ✅ Proceed with final answer.
@@ -71,7 +75,6 @@ Rules:
 Format the summary like a human-written answer, not JSON. Keep it concise.
 """
 
-    # Convert list of Pydantic objects to raw JSON
     officers_json = json.dumps([o.dict() for o in officers], indent=2)
 
     response = client.chat.completions.create(
