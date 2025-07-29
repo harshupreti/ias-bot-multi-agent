@@ -6,84 +6,77 @@ import os
 import json
 from dotenv import load_dotenv
 from pydantic import BaseModel, field_validator
-from typing import List, Optional, Union
+from typing import List, Optional
 
 load_dotenv("GITHUB_TOKEN.env")
 
 client = OpenAI(api_key=os.getenv("GITHUB_TOKEN"))
 
-# Officer schema
 class Officer(BaseModel):
-    officer_name: str
-    cadre: Optional[str] = None
-    allotment_year: Optional[Union[str, int]] = None
-    education: Optional[str] = None
-    postings: Optional[str] = None
-    training_details: Optional[str] = None
-    awards_publications: Optional[str] = None
-    source_file: Optional[str] = None
-    source: Optional[str] = None
-    blob_path: Optional[str] = None
+    name: str
+    identity_no: str
+    cadre: Optional[str] = "Unknown"
+    scraped_from_cadre: Optional[str] = "Unknown"
+    allotment_year: Optional[int] = None
+    recruitment_source: Optional[str] = "Unknown"
+    qualification: Optional[str] = "Unknown"
+    current_posting: Optional[str] = "Unknown"
+    current_title: Optional[str] = "Unknown"
+    supremo_url: Optional[str] = None
+    gender: Optional[str] = "Unknown"
+    dob: Optional[str] = "Unknown"
+    has_training: Optional[bool] = False
+    has_awards: Optional[bool] = False
+    education_count: Optional[int] = 0
+    experience_count: Optional[int] = 0
+    pdf_path: Optional[str] = None
 
     @field_validator("allotment_year")
-    def convert_allotment_year_to_str(cls, v):
-        return str(v) if v is not None else v
-
+    def convert_year(cls, v):
+        return int(v) if v is not None else None
 
 @tool
-def reasoning_tool(query: str, officers: List[Officer]) -> str:
+def reasoning_tool(query: str, officers: List[Officer], filters: Optional[dict] = None) -> str:
     """
-    Use this tool to analyze the query and retrieved officer list before generating a final answer.
-
-    The LLM will:
-    - Evaluate whether enough relevant information has been found.
-    - Reject any officers that do not match the query requirements.
-    - If no suitable candidates exist, trigger a web search or re-query instruction.
-    - If suitable candidates are found, return their full original information block (unmodified).
+    Final reasoning tool that evaluates IAS officer profiles for a specific query.
+    Removes only completely irrelevant officers and ranks the rest with reasoning.
     """
 
     system_msg = """
-You are a critical reasoning agent that evaluates IAS officer profiles for a given user query.
+You are a reasoning agent tasked with evaluating IAS officers for a given query.
 
 Your job is to:
-1. Carefully analyze the list of OFFICERS (in JSON format).
-2. For each officer, decide whether they are a good match for the user's query (based on experience, role, domain, seniority, etc.).
-3. Strictly return officers that are just below the target role or ready for promotion.
-4. ONLY keep the officers who are relevant.
-5. Return your result in this exact format:
+1. Examine the list of OFFICERS (in JSON format).
+2. Remove officers who are completely unrelated to the query — i.e., match NONE of the criteria (like experience, title, education, etc).
+3. For the remaining officers, rank them from most to least suitable.
+4. Provide a short reasoning for why each officer was ranked that way.
 
-- If at least one relevant match is found:
-    ✅ Proceed with final answer.
-    Relevant officers:
-    <full original JSON objects for relevant officers>
+Return results in this format:
 
-- If NONE are relevant:
-    ❌ Insufficient data.
-    Recommend: <web search | retry | no match found in DB | etc.>
+write a human-readable summary in markdown:
+- Introduce the top candidates by name, cadre, allotment year, and current title/posting.
+- For each, explain briefly (3–4 lines) why they’re a strong fit (experience, education, seniority, etc.).
+- Highlight any unique or standout traits.
+- Link to their full profile if available.
 
-Rules:
-- Do not summarize or reformat officer data.
-- Only include exact JSON blocks of matching officers.
-- Be strict. If unsure, exclude the officer and suggest fallback.
-
-- After identifying relevant officers, write a short, clean final answer in Markdown format:
-  - Briefly list up to 3 matching officers with relevant details (name, cadre, year, key role)
-  - If one officer clearly stands out, highlight them
-  - Their key experience/education
-  - A source link to their full profile
-
-Format the summary like a human-written answer, not JSON. Keep it concise.
+If multiple officers, display atleast 3–5 top candidates and why they are suitable.
+Avoid being too strict — include anyone who seems even somewhat relevant.
+Keep the explanation natural, readable, and helpful for a senior official.
 """
 
     officers_json = json.dumps([o.dict() for o in officers], indent=2)
+    filters_block = f"\nFILTERS:\n{json.dumps(filters, indent=2)}" if filters else ""
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         messages=[
             {"role": "system", "content": system_msg.strip()},
-            {"role": "user", "content": f"QUERY: {query}\n\nOFFICERS:\n{officers_json}"}
+            {
+                "role": "user",
+                "content": f"QUERY: {query}{filters_block}\n\nOFFICERS:\n{officers_json}"
+            }
         ],
-        temperature=0.3
+        temperature=0.5
     )
 
     return response.choices[0].message.content.strip()

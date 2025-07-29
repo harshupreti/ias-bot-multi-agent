@@ -13,6 +13,16 @@ token = os.environ["GITHUB_TOKEN"]
 model = "gpt-4o"
 client = OpenAI(api_key=token)
 
+TITLES = [
+    "Junior Scale",
+    "Under Secretary",
+    "Deputy Secretary",
+    "Director",
+    "Joint Secretary",
+    "Additional Secretary",
+    "Secretary"
+]
+
 def safe_json_parse(text, fallback="{}"):
     """Parse JSON robustly from response."""
     try:
@@ -29,43 +39,39 @@ def safe_json_parse(text, fallback="{}"):
 @tool
 def check_role_intent(query: str) -> dict:
     """
-    Detects if the query is about a specific IAS role.
-    If yes, returns:
-      - checklist: markdown string of info to gather
-      - queries: list of semantic search prompts (for vector similarity)
-      - filters: rules like "exclude officers already at this level"
-      - position_below: one level below the target position (to help widen search scope)
+    called when the user is requesting officer recommendations for a specific IAS role.
 
-    Filters are for internal reference and not meant for direct use in filtering tools.
-    After this tool, use semantic_search to find officers matching the queries.
-    If no role intent, try filter_officers() to find officers based on traits.
+    Returns:
+      - `queries`: semantic search prompts for vector similarity.
+      - `current_title`: The position for which the recommendations are being made.
     """
+    titles_str = "\n".join(f"- {title}" for title in TITLES)
 
-    system_prompt = """
-You are an expert assistant that identifies when the user's query is asking for IAS officer recommendations for a specific role or position.
+    system_prompt = f"""
+You are an expert assistant that identifies IAS role recommendation requests and generates semantic search prompts.
 
-If the user is **clearly asking for officers to fill a specific IAS position**, such as "recommend 3 officers for Joint Secretary in MeitY", "Officers with technical background for a Director role" then:
+Here is the available titles for current_title. Only use these titles:
+{titles_str}
 
-✅ This **is a role intent**.
+These titles are not in correct order, so you need to look to look at all the titles to find the suitable ones.
 
-If YES (role intent is detected), return a JSON object with:
-- `checklist`: A short markdown bullet list of what info is needed to make a good recommendation.
-- `queries`: 2–4 **trait-based semantic search prompts** suitable for vector similarity. In each query, include the role just below the target role, e.g., if target is "Joint Secretary", use the terms "Director" or "Deputy Secretary" in every query. Avoid web-style phrasing. Write short prompts like:
-  - "(Position just below) with experience in digital governance"
-  - "(Position just below) who worked in finance ministry"
-  - "(Position just below) with B.Tech or technical background"
-- `filters`: Internal reference only (not for hard filtering). Include:
-  - Any domain background implied by the query (e.g., 'finance', 'cybersecurity')
+Your task:
+1. Understand the user's query to identify the target IAS role. For example, if the user asks ias officer for the role of Joint Secretary in MeitY, you should infer the target role as "Joint Secretary".
+2. Return:
+  - 3 to 4 rich semantic queries.
+    Example: if the user asks recommend 3 officers for Joint Secretary in MeitY, return queries like:
+    - "Officers with experience in IT, electronics, digital governance, e-governance"
+    - "Officers with B.Tech or technical background"
+    - "Officers with postings in MeitY or Niti Aayog or NIC or similar"
+    etc.
+   queries should include things like educational qualifications such as btech, b.a. etc. or experiences like digital governance, e-governance, or ministries like finance ministry, dpot, ministry of electronics, or domain like IT, finance, administration etc.
+  - the inferred current title that the user is asking for, e.g. "Director, Joint Secretary" etc.
 
-If NO (not about any role recommendation), return:
-
-```json
-{
-  "checklist": "❌ No role intent detected.",
-  "queries": [],
-  "filters": {},
-  "position_below": null
-}
+Only return this JSON format:
+{{
+  "queries": [...],
+  "current_title": "...
+}}
 """
 
     response = client.chat.completions.create(
@@ -78,4 +84,4 @@ If NO (not about any role recommendation), return:
     )
 
     raw = response.choices[0].message.content.strip()
-    return safe_json_parse(raw, fallback="{}")
+    return safe_json_parse(raw, fallback='{{"queries": [], "current_title": null}}')

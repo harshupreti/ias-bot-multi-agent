@@ -4,7 +4,7 @@ from langchain_core.tools import tool
 import requests
 
 # --- Constants ---
-SEARCH_API_KEY = "KpSgBhJLkDQL1NvwPRGn6FT5"
+SEARCH_API_KEY = "k48oAMpAYHB6XixnKYJG8WLK"
 SEARCH_API_URL = "https://www.searchapi.io/api/v1/search"
 
 def search_web_google(query: str, num_results: int = 5) -> list[str]:

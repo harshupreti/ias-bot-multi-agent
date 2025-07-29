@@ -8,3 +8,6 @@ qdrant-client==1.14.3
 pydantic==2.11.7
 python-dotenv==1.0.1
 einops==0.8.1
+langgraph==0.4.9
+rapidfuzz==3.13.0
+requests==2.32.3
