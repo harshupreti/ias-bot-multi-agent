@@ -3,10 +3,41 @@ from langchain.callbacks.base import BaseCallbackHandler
 from langchain.memory import ConversationBufferMemory
 from langchain.schema.runnable import RunnableConfig
 import io
+import asyncio
 
+# --- Import update checker ---
+from pipeline_runner import AsyncPipelineRunner
+from qdrant_client import QdrantClient
+from config import validate_config, QDRANT_URL, QDRANT_API_KEY, STATE_CODES
+
+client = QdrantClient(
+    url=QDRANT_URL,
+    api_key=QDRANT_API_KEY,
+)
+
+runner = AsyncPipelineRunner(qdrant_client=client)
+
+async def process_all_states():
+    for state_code in STATE_CODES.keys():
+        try:
+            print(f"▶ Processing cadre/state: {state_code}")
+            await runner.run_for_cadre(state_code)
+        except Exception as e:
+            print(f"❌ Error in {state_code}: {e}")
+
+# --- Streamlit page setup ---
 st.set_page_config(page_title="IAS Officer Bot (Multi-Agent)", layout="wide")
 st.title("🎯 IAS Officer Search Bot (v5.1)")
 st.write("Now powered by LangChain agent + tools")
+
+# --- Run update check once at startup ---
+@st.cache_resource(show_spinner="🔄 Checking for updates in dataset...")
+def check_for_updates():
+    validate_config()
+    asyncio.run(process_all_states())
+    return True
+
+check_for_updates()
 
 # --- Cached Graph Loader ---
 @st.cache_resource(show_spinner="⚙️ Warming up reasoning engine...")
